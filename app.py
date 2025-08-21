@@ -1,18 +1,16 @@
-
 import os
 import re
-import json
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List
 
 import streamlit as st
 
 from src.helper import init_pinecone, get_embedding_model, get_chat_model
-from src.pdf_utils import process_coursebook_pdf, process_patient_pdf, load_ingested_books
+from src.pdf_utils import process_coursebook_pdf, process_patient_pdf
 from src.rag import build_retrievers, build_rag_chain, ask
 
 # ================================
-# 0) Page Setup & Utilities
+# Page Setup & Directories
 # ================================
 
 APP_TITLE = "🏥 First Aid Medical Chatbot"
@@ -25,34 +23,14 @@ def ensure_dirs():
     os.makedirs(PATIENT_DIR, exist_ok=True)
 
 ensure_dirs()
-
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 
-CUSTOM_CSS = """
-<style>
-.block-container { padding-top: 1.2rem; padding-bottom: 7rem; }
-.chat-bubble { padding: 0.85rem 1rem; border-radius: 14px; margin: 0.35rem 0; }
-.user { background: #e8f9ee; border: 1px solid #bde7cd; text-align: right; }
-.assistant { background: #f2f2f2; border: 1px solid #e0e0e0; }
-.right { display: flex; justify-content: flex-end; }
-.left { display: flex; justify-content: flex-start; }
-span.pill { background:#fff3cd; border:1px solid #ffe8a1; border-radius: 999px; padding: 0.1rem 0.5rem; }
-.fixed-input {
-  position: fixed; bottom: 0; left: 0; right: 0;
-  background: white; border-top: 1px solid #eee;
-  padding: 0.6rem 1rem; z-index: 999;
-}
-.fixed-inner { max-width: 1200px; margin: 0 auto; }
-</style>
-"""
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-
 # ================================
-# 1) Initialize Backend & Session
+# Initialize Backends
 # ================================
 
 @st.cache_resource(show_spinner=False)
-def _bootstrap_backends() -> Tuple[object, str, object, object]:
+def _bootstrap_backends():
     pc, index_name = init_pinecone()
     embedding = get_embedding_model()
     llm = get_chat_model()
@@ -60,27 +38,25 @@ def _bootstrap_backends() -> Tuple[object, str, object, object]:
 
 pc, index_name, embedding, llm = _bootstrap_backends()
 
+# ================================
+# Init Session State
+# ================================
+
 if "current_patient" not in st.session_state:
     st.session_state.current_patient = "None"
 if "chat_history" not in st.session_state:
     st.session_state.chat_history: Dict[str, List[Dict]] = {}
 if "uploaded_courses" not in st.session_state:
-    try:
-        ing = load_ingested_books().get(COURSE_NAMESPACE, [])
-    except Exception:
-        ing = []
-    st.session_state.uploaded_courses = set(ing)
-if "patients" not in st.session_state:
-    st.session_state.patients = set()
-if "patient_meta" not in st.session_state:
-    st.session_state.patient_meta: Dict[str, Dict] = {}
+    st.session_state.uploaded_courses = set()
 if "message_count" not in st.session_state:
     st.session_state.message_count = 0
-if "last_uploaded_patient" not in st.session_state:
-    st.session_state.last_uploaded_patient = None
+if "patient_uploader_key" not in st.session_state:
+    st.session_state.patient_uploader_key = 0
+if "course_uploader_key" not in st.session_state:
+    st.session_state.course_uploader_key = 0
 
 # ================================
-# 2) Helpers
+# Helpers
 # ================================
 
 def highlight_medical_terms(text: str) -> str:
@@ -91,241 +67,207 @@ def highlight_medical_terms(text: str) -> str:
         "airway", "breathing", "circulation", "defibrillator", "AED",
         "bleeding", "poisoning", "choking", "seizure"
     ]
-    def repl(m): return f"<span class='pill'>{m.group(0)}</span>"
+    def repl(m): 
+        return f"<span style='background:#fffae6;border:1px solid #ffe58f;border-radius:6px;padding:0 4px;'>{m.group(0)}</span>"
     for t in sorted(terms, key=len, reverse=True):
         text = re.sub(rf"(?i)\b{re.escape(t)}\b", repl, text)
     return text
 
-@st.cache_data(ttl=30)
-def list_patient_namespaces() -> Dict[str, int]:
+def icon_for_namespace(ns: str) -> str:
+    return "📖" if ns == COURSE_NAMESPACE else "🏥"
+
+def pretty_source_label(src_path: str) -> str:
+    base = os.path.basename(src_path)
+    base = re.sub(r'\.pdf$', '', base, flags=re.IGNORECASE)
+    return base
+
+def build_clickable_citations(sources: List[Dict], turn_idx: int):
+    if not sources:
+        return "", []
+    lines = []
+    for i, s in enumerate(sources, start=1):
+        ns = s.get("namespace") or ""
+        src = s.get("source") or ""
+        page = s.get("page")
+        chunk = s.get("chunk", "")
+        try:
+            page_int = int(page)
+        except Exception:
+            page_int = None
+        icon = icon_for_namespace(ns if ns else COURSE_NAMESPACE)
+        ns_label = ns if ns else (COURSE_NAMESPACE if "medical_course" in src.lower() else "Patient")
+        page_str = f" — page {page_int}" if page_int is not None else ""
+        src_label = pretty_source_label(src) if src else ns_label
+        anchor = f"src-{turn_idx}-{i}"
+        header = f"<div id='{anchor}'>[{i}] {icon} **{ns_label}** — {src_label}{page_str}</div>"
+        expander = (
+            f"<details><summary>Show context</summary>"
+            f"<div style='white-space:pre-wrap;font-size:smaller;background:#fafafa;"
+            f"border:1px solid #ddd;padding:6px;border-radius:6px;margin-top:4px;'>{chunk}</div></details>"
+            if chunk else ""
+        )
+        lines.append(header + expander)
+    citation_html = " " + " ".join(
+        f"<a href='#src-{turn_idx}-{i}' target='_self'>[{i}]</a>" for i in range(1, len(sources)+1)
+    )
+    return citation_html, lines
+
+def list_patient_namespaces():
     try:
         index = pc.Index(index_name)
         stats = index.describe_index_stats()
         namespaces = stats.get("namespaces", {})
-        out = {}
-        for ns, info in namespaces.items():
-            if ns and ns != COURSE_NAMESPACE:
-                out[ns] = int(info.get("vector_count", 0))
-        return out
+        return [ns for ns in namespaces if ns != COURSE_NAMESPACE]
     except Exception:
-        return {}
-
-def ensure_chat_bucket(patient_id: str):
-    if patient_id not in st.session_state.chat_history:
-        st.session_state.chat_history[patient_id] = []
-
-def patient_card(patient_id: str, chunk_count: Optional[int], mode_label: str):
-    with st.container(border=True):
-        st.markdown(f"### 🏥 Patient: `{patient_id}`" if patient_id != "None" else "### 🧑‍⚕️ No patient selected")
-        col1, col2, col3 = st.columns(3)
-        cc = "—" if chunk_count is None else f"{chunk_count}"
-        last = "—"
-        if patient_id in st.session_state.patient_meta:
-            last = st.session_state.patient_meta[patient_id].get("last_update", "—")
-            if chunk_count is None:
-                chunk_count = st.session_state.patient_meta[patient_id].get("chunk_count")
-                cc = "—" if chunk_count is None else f"{chunk_count}"
-        col1.metric("Chunks in Pinecone", cc)
-        col2.metric("Last update", last)
-        col3.metric("Search mode", mode_label)
-
-def icon_for_namespace(ns: str) -> str:
-    return "📖" if ns == COURSE_NAMESPACE else "🏥"
+        return []
 
 # ================================
-# 3) Sidebar Controls
+# Sidebar
 # ================================
 
 with st.sidebar:
-    st.header("⚙️ Controls")
+    st.title("⚙️ Controls")
 
-    mode = st.selectbox("🔍 Search mode", ["Both", "Patient Only", "Coursebook Only"], index=0)
-    if mode == "Both":
-        course_w, patient_w = 0.6, 0.4
-        mode_label = "Both (weighted)"
-    elif mode == "Patient Only":
-        course_w, patient_w = 0.0, 1.0
-        mode_label = "Patient only"
-    else:
-        course_w, patient_w = 1.0, 0.0
-        mode_label = "Coursebook only"
+    # Search mode as radio
+    search_mode = st.radio("Search Mode", ["Both", "Patient Only", "Coursebook Only"], horizontal=True)
 
-    st.divider()
+    # Patient selector (from Pinecone only)
+    patients = ["None"] + sorted(list_patient_namespaces())
+    st.session_state.current_patient = st.selectbox(
+        "Select Patient",
+        options=patients,
+        index=patients.index(st.session_state.current_patient) if st.session_state.current_patient in patients else 0,
+        format_func=lambda x: "🏥 "+x if x != "None" else "None"
+    )
 
-    st.subheader("📚 Upload Coursebook PDF")
-    cb_file = st.file_uploader("Choose a coursebook PDF", type=["pdf"], key="course_pdf_uploader")
-    if cb_file is not None:
-        filename = cb_file.name
-        save_path = os.path.join(COURSE_DIR, filename)
-        if filename not in st.session_state.uploaded_courses:
-            with open(save_path, "wb") as f:
-                f.write(cb_file.read())
-            with st.spinner("Processing coursebook…"):
-                _ = process_coursebook_pdf(
-                    pdf_path=save_path,
-                    embedding=embedding,
-                    index_name=index_name,
-                    batch_size=100,
-                )
-            st.session_state.uploaded_courses.add(filename)
-            st.success(f"Uploaded & indexed **{filename}** into `{COURSE_NAMESPACE}`.")
-        else:
-            st.info(f"Already processed: **{filename}**")
+    # Clear history
+    if st.session_state.current_patient != "None":
+        if st.button("🗑️ Clear History"):
+            st.session_state.chat_history[st.session_state.current_patient] = []
+            st.success("History cleared")
 
-    st.divider()
+    # Upload PDFs
+    st.subheader("📥 Upload PDFs")
 
-    st.subheader("🏥 Upload Patient PDF")
-    pt_file = st.file_uploader("Choose a patient PDF", type=["pdf"], key="patient_pdf_uploader")
-    if pt_file is not None:
-        filename = pt_file.name
+    # Patient PDF (always overwrite)
+    patient_pdf = st.file_uploader(
+        "Upload Patient PDF", type="pdf", key=f"patient_pdf_{st.session_state.patient_uploader_key}"
+    )
+    if patient_pdf is not None:
+        filename = patient_pdf.name
         patient_id = os.path.splitext(filename)[0]
-        if st.session_state.last_uploaded_patient == filename:
-            st.info(f"Already processed: **{filename}**")
+        save_path = os.path.join(PATIENT_DIR, filename)
+        with open(save_path, "wb") as f:
+            f.write(patient_pdf.read())
+        with st.spinner("Processing patient PDF..."):
+            process_patient_pdf(save_path, patient_id, embedding, pc, index_name)
+        st.session_state.current_patient = patient_id
+        st.success(f"Uploaded patient file: {filename}")
+        st.session_state.patient_uploader_key += 1
+        st.rerun()
+
+    # Coursebook PDF (skip if already processed)
+    course_pdf = st.file_uploader(
+        "Upload Coursebook PDF", type="pdf", key=f"course_pdf_{st.session_state.course_uploader_key}"
+    )
+    if course_pdf is not None:
+        filename = course_pdf.name
+        if filename in st.session_state.uploaded_courses:
+            st.sidebar.info(f"📖 Coursebook '{filename}' already processed.")
         else:
-            save_path = os.path.join(PATIENT_DIR, filename)
+            save_path = os.path.join(COURSE_DIR, filename)
             with open(save_path, "wb") as f:
-                f.write(pt_file.read())
-            with st.spinner(f"Processing patient PDF for `{patient_id}`…"):
-                vs = process_patient_pdf(
-                    pdf_path=save_path,
-                    patient_id=patient_id,
-                    embedding=embedding,
-                    pc=pc,
-                    index_name=index_name,
-                    chunk_size=1000,
-                    chunk_overlap=200,
-                )
-            st.session_state.patients.add(patient_id)
-            st.session_state.current_patient = patient_id
-            st.session_state.patient_meta[patient_id] = {
-                "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
-            st.session_state.last_uploaded_patient = filename
-            st.success(f"Uploaded & indexed **{filename}** into `{patient_id}` namespace.")
-
-    st.divider()
-
-    st.subheader("👤 Patient Selector")
-    live = list_patient_namespaces()
-    for ns in live.keys():
-        st.session_state.patients.add(ns)
-    patient_options = ["None"] + sorted(st.session_state.patients)
-    selected = st.selectbox("Active patient", options=patient_options,
-                            index=patient_options.index(st.session_state.current_patient)
-                            if st.session_state.current_patient in patient_options else 0,
-                            key="patient_selector")
-    if selected != st.session_state.current_patient:
-        st.session_state.current_patient = selected
+                f.write(course_pdf.read())
+            with st.spinner("Processing coursebook..."):
+                process_coursebook_pdf(save_path, embedding, index_name)
+            st.session_state.uploaded_courses.add(filename)
+            st.success(f"Uploaded coursebook: {filename}")
+        st.session_state.course_uploader_key += 1
+        st.rerun()
 
 # ================================
-# 4) Main Panel: Patient Card + Chat
+# Main Chat Display
 # ================================
 
 current = st.session_state.current_patient
-live_counts = list_patient_namespaces()
-chunk_count = live_counts.get(current) if current != "None" else None
-patient_card(current, chunk_count, mode_label)
+if current not in st.session_state.chat_history:
+    st.session_state.chat_history[current] = []
 
-ensure_chat_bucket(current)
+st.header("💬 Chat")
 
-st.markdown("### 💬 Chat")
-for turn in st.session_state.chat_history[current]:
-    with st.container():
-        st.markdown('<div class="right"><div class="chat-bubble user">' + turn["question"] + '</div></div>', unsafe_allow_html=True)
-    answer_html = highlight_medical_terms(turn["answer"])
-    with st.container():
-        st.markdown('<div class="left"><div class="chat-bubble assistant">' + answer_html + '</div></div>', unsafe_allow_html=True)
+for turn_idx, turn in enumerate(st.session_state.chat_history[current]):
+    # Question
+    st.markdown(
+        f"<div style='text-align:right;background:#e8f9ee;padding:8px;border-radius:8px;margin:4px 0;'>"
+        f"<b>{turn['question']}</b></div>", unsafe_allow_html=True
+    )
 
-    with st.expander("🔎 Sources & Contexts"):
-        if turn.get("sources"):
+    # Answer with clickable citations
+    sources = turn.get("sources", [])
+    citation_html, source_lines = build_clickable_citations(sources, turn_idx)
+    answer_with_cites = (turn.get("answer", "") or "") + citation_html
+    answer_html = highlight_medical_terms(answer_with_cites)
+    st.markdown(
+        f"<div style='text-align:left;background:#f2f2f2;padding:8px;border-radius:8px;margin:4px 0;'>"
+        f"{answer_html}</div>", unsafe_allow_html=True
+    )
+
+    if source_lines:
+        with st.expander("🔎 Sources & Contexts"):
             st.markdown("**Sources**")
-            for s in turn["sources"]:
-                ns = s.get("namespace", "")
-                icon = icon_for_namespace(ns)
-                src = s.get("source", "—")
-                page = s.get("page", "—")
-                st.markdown(f"{icon} `{ns}` — {src} (page {page})")
-        if turn.get("contexts"):
-            st.markdown("---")
-            st.markdown("**Retrieved Contexts**")
-            for ctx_idx, ctx in enumerate(turn["contexts"]):
-                lbl = f"{ctx.get('source','—')} (p.{ctx.get('page','—')}) • {ctx.get('namespace','—')}"
-                unique_key = f"ctx_{current}_{id(turn)}_{ctx_idx}"
-                st.text_area(lbl, value=ctx.get("chunk", ""), height=140, key=unique_key)
+            for line in source_lines:
+                st.markdown(line, unsafe_allow_html=True)
 
 # ================================
-# 5) Fixed Input Bar
+# Chat Input
 # ================================
-st.markdown('<div class="fixed-input"><div class="fixed-inner">', unsafe_allow_html=True)
-colA, colB = st.columns([6, 1])
-with colA:
-    q_key = f"question_{current}_{st.session_state.message_count}"
-    question = st.text_input("Ask your medical question…", label_visibility="collapsed", key=q_key, value="")
-with colB:
-    submitted = st.button("Send", use_container_width=True, key=f"send_{st.session_state.message_count}")
-st.markdown('</div></div>', unsafe_allow_html=True)
 
-if submitted and question.strip():
-    patient_id = None if current == "None" else current
+user_msg = st.chat_input("Ask your medical question…")
+if user_msg and user_msg.strip():
+    question = user_msg.strip()
 
-    if mode == "Both":
+    # Build retriever depending on search mode
+    if search_mode == "Patient Only":
         retriever = build_retrievers(
-            index_name=index_name, embedding=embedding, patient_id=patient_id,
-            k_course=4, k_patient=4, course_namespace=COURSE_NAMESPACE,
-            weights=(course_w, patient_w),
+            index_name,
+            embedding,
+            patient_id=current if current != "None" else None,
+            course_namespace=None,
         )
-    elif mode == "Patient Only":
+    elif search_mode == "Coursebook Only":
         retriever = build_retrievers(
-            index_name=index_name,
-            embedding=embedding,
-            patient_id=patient_id,
-            k_course=4,       # must be >0
-            k_patient=5,
-            course_namespace=COURSE_NAMESPACE,
-            weights=(0.0, 1.0),   # course ignored
-        )
-    else:  # Coursebook Only
-        retriever = build_retrievers(
-            index_name=index_name,
-            embedding=embedding,
+            index_name,
+            embedding,
             patient_id=None,
-            k_course=6,
-            k_patient=4,      # must be >0
             course_namespace=COURSE_NAMESPACE,
-            weights=(1.0, 0.0),   # patient ignored
+        )
+    else:  # Both
+        retriever = build_retrievers(
+            index_name,
+            embedding,
+            patient_id=current if current != "None" else None,
+            course_namespace=COURSE_NAMESPACE,
         )
 
     chain = build_rag_chain(llm, retriever)
-    with st.spinner("Thinking…"):
-        result = ask(chain, question.strip())
+
+    with st.spinner("Thinking..."):
+        result = ask(chain, question)
 
     st.session_state.chat_history[current].append({
-        "question": question.strip(),
+        "question": question,
         "answer": result.get("answer", ""),
         "sources": result.get("sources", []),
         "contexts": result.get("contexts", []),
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "mode": mode_label,
+        "timestamp": datetime.now().isoformat()
     })
-
-    st.session_state.message_count += 1
-
-    if current != "None":
-        try:
-            counts = list_patient_namespaces()
-            st.session_state.patient_meta.setdefault(current, {})
-            st.session_state.patient_meta[current]["chunk_count"] = counts.get(current)
-            st.session_state.patient_meta[current]["last_update"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        except Exception:
-            pass
-
     st.rerun()
 
 # ================================
-# 6) Footer Disclaimer
+# Footer Disclaimer
 # ================================
 st.markdown("---")
-st.markdown("""
-> ⚠️ **Disclaimer:** This AI assistant provides *first-aid guidance only* based on the provided medical documents.
-> It is **not** a substitute for professional medical advice, diagnosis, or treatment. In emergencies, call local emergency services.
-""")
+st.markdown(
+    "> ⚠️ **Disclaimer:** This AI assistant provides first-aid guidance only. "
+    "Always consult a professional for medical emergencies."
+)
