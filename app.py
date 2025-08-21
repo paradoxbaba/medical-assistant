@@ -275,19 +275,24 @@ if submitted and question.strip():
             weights=(course_w, patient_w),
         )
     elif mode == "Patient Only":
-        if not patient_id:
-            st.warning("Select a patient or switch to Another mode.")
-            st.stop()
         retriever = build_retrievers(
-            index_name=index_name, embedding=embedding, patient_id=patient_id,
-            k_course=0, k_patient=5, course_namespace=COURSE_NAMESPACE,
-            weights=(0.0, 1.0),
+            index_name=index_name,
+            embedding=embedding,
+            patient_id=patient_id,
+            k_course=4,       # must be >0
+            k_patient=5,
+            course_namespace=COURSE_NAMESPACE,
+            weights=(0.0, 1.0),   # course ignored
         )
-    else:
+    else:  # Coursebook Only
         retriever = build_retrievers(
-            index_name=index_name, embedding=embedding, patient_id=None,
-            k_course=6, k_patient=0, course_namespace=COURSE_NAMESPACE,
-            weights=(1.0, 0.0),
+            index_name=index_name,
+            embedding=embedding,
+            patient_id=None,
+            k_course=6,
+            k_patient=4,      # must be >0
+            course_namespace=COURSE_NAMESPACE,
+            weights=(1.0, 0.0),   # patient ignored
         )
 
     chain = build_rag_chain(llm, retriever)
