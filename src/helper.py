@@ -81,6 +81,7 @@ def get_chat_model(
             temperature=temperature,
             timeout=timeout,
             max_retries=max_retries,
+            max_tokens=800,
         )
 
     elif provider.lower() == "openai":
