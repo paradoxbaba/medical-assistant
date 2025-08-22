@@ -213,10 +213,9 @@ for turn_idx, turn in enumerate(st.session_state.chat_history[current]):
     )
 
     if source_lines:
-        with st.expander("🔎 Sources & Contexts"):
-            st.markdown("**Sources**")
-            for line in source_lines:
-                st.markdown(line, unsafe_allow_html=True)
+        with st.expander("**Sources**")
+        for line in source_lines:
+            st.markdown(line, unsafe_allow_html=True)
 
 # ================================
 # Chat Input
@@ -254,11 +253,22 @@ if user_msg and user_msg.strip():
     with st.spinner("Thinking..."):
         result = ask(chain, question)
 
+    sources = result.get("sources", [])
+    contexts = result.get("contexts", [])
+
+    # Try to attach matching chunk text to each source
+    for src in sources:
+        for ctx in contexts:
+            if (src.get("source") == ctx.get("source")
+                and src.get("page") == ctx.get("page")
+                and src.get("namespace") == ctx.get("namespace")):
+                src["chunk"] = ctx.get("chunk", "")
+                break
+
     st.session_state.chat_history[current].append({
         "question": question,
         "answer": result.get("answer", ""),
-        "sources": result.get("sources", []),
-        "contexts": result.get("contexts", []),
+        "sources": sources,
         "timestamp": datetime.now().isoformat()
     })
     st.rerun()
