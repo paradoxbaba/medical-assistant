@@ -150,8 +150,21 @@ def list_patient_namespaces():
 # ================================
 # Dialogs (container-based, not auto-dismissable)
 # ================================
+import random
+import streamlit.components.v1 as components
 
 def manual_dialog():
+    html_code = f"""
+    <div id="scroll-top-marker" style="height:1px;"></div>
+    <script id="{random.randint(1000, 9999)}">
+        var e = document.getElementById("scroll-top-marker");
+        if (e) {{
+            e.scrollIntoView({{behavior: "instant", block: "start"}});
+            e.remove();
+        }}
+    </script>
+    """
+    components.html(html_code, height=0)
     with st.container(border=True):
         st.markdown("### 📖 User Manual")
         st.markdown("### 💔 Problem 💡 Solution 🏆 Outcome")
@@ -220,7 +233,7 @@ def manual_dialog():
         st.markdown(
             f"""
         1. (Optional) Upload relevant **coursebooks** once — they remain stored permanently.  
-        2. Upload a **patient file** with structured notes — [Download Sample Patient File]({"github.com/paradoxbaba/medical-assistant/blob/main/data/patient_data/Patient_P0005.pdf"})  
+        2. Upload a **patient file** with structured notes — [Download Sample Patient File]({"https://www.github.com/paradoxbaba/medical-assistant/blob/main/data/patient_data/Patient_P0004.pdf"})  
         3. Select **search mode**: *Patient Only*, *Coursebook Only*, or *Both*  
         4. Ask your medical question in the **chat input**  
         5. Review the **answer + citations** and expand context if needed
@@ -235,7 +248,20 @@ def manual_dialog():
             "🎥 Here’s a demo by Oracle on their Clinical AI Agent — for inspiration and context."
         )
         st.video("https://www.youtube.com/watch?v=KA717mJyNHY&ab_channel=Oracle")
-        if st.button("Close ✅", key="close_manual"):
+        st.markdown("""
+        <style>
+            div.stButton > button:first-child {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+            }
+            div.stButton > button:first-child:hover {
+                background-color: #45a049;
+            }
+        </style>
+        """, unsafe_allow_html=True)
+
+        if st.button("📘 Close Manual", key="close_manual", use_container_width=True):
             st.session_state.show_manual = False
             st.session_state.manual_shown_once = True
             st.rerun()
@@ -300,9 +326,21 @@ def coursebook_dialog():
 # ================================
 
 with st.sidebar:
+
+    # Reopen manual
+    if st.button("📖 User Manual"):
+        st.session_state.show_manual = True
+        st.rerun()
+
+    
     st.title("⚙️ Controls")
 
-    search_mode = st.radio("Search Mode", ["Both", "Patient Only", "Coursebook Only"])
+    st.markdown("#### 🔍 Search Mode")
+    search_mode = st.radio(
+        "Search Mode",  # Non-empty label
+        options=["Both", "Patient Only", "Coursebook Only"],
+        label_visibility="collapsed"  # Hide visually but keep for accessibility
+    )
 
     # Build patient options from Pinecone + local cache, so they appear immediately after upload
     remote_patients = sorted(list_patient_namespaces())
@@ -310,12 +348,14 @@ with st.sidebar:
     patients = ["None"] + all_patients
 
     # Use a changing key to force re-render when we add a new patient to cache
+    st.markdown("**Select Patient**")  # Bold header
     st.session_state.current_patient = st.selectbox(
-        "Select Patient",
+        "Select Patient",  
         options=patients,
         index=patients.index(st.session_state.current_patient) if st.session_state.current_patient in patients else 0,
         format_func=lambda x: ("🏥 " + x) if x != "None" else "None",
         key=f"patient_select_{st.session_state.patient_selector_key}",
+        label_visibility="collapsed"
     )
 
     if st.session_state.current_patient != "None":
@@ -327,7 +367,7 @@ with st.sidebar:
 
     # Patient PDF (always overwrite)
     patient_pdf = st.file_uploader(
-        "Upload Patient PDF", type="pdf", key=f"patient_pdf_{st.session_state.patient_uploader_key}"
+        "Upload Patient PDF - Max Size 5 MB", type="pdf", key=f"patient_pdf_{st.session_state.patient_uploader_key}"
     )
     if patient_pdf is not None and not st.session_state.processing_patient:
         filename = patient_pdf.name
@@ -346,7 +386,7 @@ with st.sidebar:
 
     # Coursebook PDF (skip if already processed)
     course_pdf = st.file_uploader(
-        "Upload Coursebook PDF", type="pdf", key=f"course_pdf_{st.session_state.course_uploader_key}"
+        "Upload Coursebook PDF  - Max Size 20 MB", type="pdf", key=f"course_pdf_{st.session_state.course_uploader_key}"
     )
     if course_pdf is not None and not st.session_state.processing_course:
         filename = course_pdf.name
@@ -362,10 +402,7 @@ with st.sidebar:
     if st.session_state.show_course_dialog:
         coursebook_dialog()
 
-    # Reopen manual
-    if st.button("📖 User Manual"):
-        st.session_state.show_manual = True
-        st.rerun()
+
 
 # ================================
 # Show User Manual (only once per session, but allow manual reopen)
@@ -384,7 +421,7 @@ current = st.session_state.current_patient
 if current not in st.session_state.chat_history:
     st.session_state.chat_history[current] = []
 
-st.header("💬 Chat")
+st.header("👨‍⚕️🩺 Doctor's AI Assistant 🧠🔍")
 
 for turn_idx, turn in enumerate(st.session_state.chat_history[current]):
     # Question
@@ -480,6 +517,5 @@ if user_msg and user_msg.strip():
 
 st.markdown("---")
 st.markdown(
-    "> ⚠️ **Disclaimer:** This AI assistant provides first-aid guidance only. "
-    "Always consult a medical professional for diagnosis and treatment."
+    "> ⚠️ 🛡️ **Clinical Decision Support Tool:** This AI assistant is designed to augment physician expertise by retrieving information from provided patient records and medical literature. The physician is ultimately responsible for all diagnostic and treatment decisions."
 )
