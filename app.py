@@ -385,9 +385,39 @@ with st.sidebar:
         patient_dialog()
 
     # Coursebook PDF (skip if already processed)
-    course_pdf = st.file_uploader(
-        "Upload Coursebook PDF  - Max Size 20 MB", type="pdf", key=f"course_pdf_{st.session_state.course_uploader_key}"
+    #course pdf disabled for regular users
+    #course_pdf = st.file_uploader(
+    #    "Upload Coursebook PDF  - Max Size 20 MB", type="pdf", key=f"course_pdf_{st.session_state.course_uploader_key}"
+    #)
+
+    st.markdown(
+        """
+        <style>
+        .disabled-upload {
+            background-color: #e0e0e0 !important;
+            color: #888 !important;
+            border: 1px solid #ccc !important;
+            padding: 0.75rem;
+            border-radius: 8px;
+            cursor: not-allowed;
+            text-align: center;
+        }
+        </style>
+        <div class="disabled-upload" title="Not authorized to upload PDFs. Ask Animesh for permission.">
+        📕 Not authorized to upload PDFs — ask Animesh for permission
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
+
+    # Keep the actual uploader hidden / inactive
+    if False:  # placeholder, will never run
+        course_pdf = st.file_uploader(
+            "Upload Coursebook PDF - Max Size 20 MB",
+            type="pdf",
+            key=f"course_pdf_{st.session_state.course_uploader_key}",
+        )
+
     if course_pdf is not None and not st.session_state.processing_course:
         filename = course_pdf.name
         save_path = os.path.join(COURSE_DIR, filename)
