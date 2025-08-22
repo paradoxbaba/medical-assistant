@@ -385,10 +385,7 @@ with st.sidebar:
         patient_dialog()
 
     # Coursebook PDF (skip if already processed)
-    #course pdf disabled for regular users
-    #course_pdf = st.file_uploader(
-    #    "Upload Coursebook PDF  - Max Size 20 MB", type="pdf", key=f"course_pdf_{st.session_state.course_uploader_key}"
-    #)
+    
 
     st.markdown(
         """
@@ -417,17 +414,23 @@ with st.sidebar:
             type="pdf",
             key=f"course_pdf_{st.session_state.course_uploader_key}",
         )
+    
+    #course pdf disabled for regular users
+    
+    # course_pdf = st.file_uploader(
+    #     "Upload Coursebook PDF  - Max Size 20 MB", type="pdf", key=f"course_pdf_{st.session_state.course_uploader_key}"
+    # )
 
-    if course_pdf is not None and not st.session_state.processing_course:
-        filename = course_pdf.name
-        save_path = os.path.join(COURSE_DIR, filename)
-        with open(save_path, "wb") as f:
-            f.write(course_pdf.read())
+    # if course_pdf is not None and not st.session_state.processing_course:
+    #     filename = course_pdf.name
+    #     save_path = os.path.join(COURSE_DIR, filename)
+    #     with open(save_path, "wb") as f:
+    #         f.write(course_pdf.read())
 
-        st.session_state.course_meta = (save_path, filename)
-        st.session_state.show_course_dialog = True
-        st.session_state.processing_course = True
-        st.rerun()
+    #     st.session_state.course_meta = (save_path, filename)
+    #     st.session_state.show_course_dialog = True
+    #     st.session_state.processing_course = True
+    #     st.rerun()
 
     if st.session_state.show_course_dialog:
         coursebook_dialog()
