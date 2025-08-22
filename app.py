@@ -5,7 +5,7 @@ from typing import Dict, List
 
 import streamlit as st
 
-# Import local modules (no src/ prefix)
+# Import local modules
 from src.helper import init_pinecone, get_embedding_model, get_chat_model
 from src.pdf_utils import process_coursebook_pdf, process_patient_pdf
 from src.rag import build_retrievers, build_rag_chain, ask
@@ -21,15 +21,12 @@ COURSE_NAMESPACE = "Medical_Course"
 
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 
-
 def ensure_dirs():
     os.makedirs(COURSE_DIR, exist_ok=True)
     os.makedirs(PATIENT_DIR, exist_ok=True)
 
-
 ensure_dirs()
 
-# Optional: allow setting links via session state/env
 DEFAULT_SAMPLE_PATIENT_URL = os.getenv("SAMPLE_PATIENT_URL")
 DEFAULT_MANUAL_VIDEO_URL = os.getenv("MANUAL_VIDEO_URL")
 
@@ -50,41 +47,32 @@ pc, index_name, embedding, llm = _bootstrap_backends()
 # Init Session State
 # ================================
 
-if "current_patient" not in st.session_state:
-    st.session_state.current_patient = "None"
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history: Dict[str, List[Dict]] = {}
-if "uploaded_courses" not in st.session_state:
-    st.session_state.uploaded_courses = set()
-if "message_count" not in st.session_state:
-    st.session_state.message_count = 0
-if "patient_uploader_key" not in st.session_state:
-    st.session_state.patient_uploader_key = 0
-if "course_uploader_key" not in st.session_state:
-    st.session_state.course_uploader_key = 0
-
-# Dialog control flags
-if "show_patient_dialog" not in st.session_state:
-    st.session_state.show_patient_dialog = False
-if "processing_patient" not in st.session_state:
-    st.session_state.processing_patient = False
-if "patient_meta" not in st.session_state:
-    st.session_state.patient_meta = None
-
-if "show_course_dialog" not in st.session_state:
-    st.session_state.show_course_dialog = False
-if "processing_course" not in st.session_state:
-    st.session_state.processing_course = False
-if "course_meta" not in st.session_state:
-    st.session_state.course_meta = None
-
-# User manual controls & external links
-if "show_manual" not in st.session_state:
-    st.session_state.show_manual = True  # Auto-open on first load
-if "sample_patient_url" not in st.session_state:
-    st.session_state.sample_patient_url = DEFAULT_SAMPLE_PATIENT_URL
-if "manual_video_url" not in st.session_state:
-    st.session_state.manual_video_url = DEFAULT_MANUAL_VIDEO_URL
+_defaults = {
+    "current_patient": "None",
+    "chat_history": {},
+    "uploaded_courses": set(),
+    "message_count": 0,
+    "patient_uploader_key": 0,
+    "course_uploader_key": 0,
+    # Dialog flags + meta
+    "show_patient_dialog": False,
+    "processing_patient": False,
+    "patient_meta": None,
+    "show_course_dialog": False,
+    "processing_course": False,
+    "course_meta": None,
+    # Manual control
+    "manual_shown_once": False,  # controls auto-open only once per session
+    "show_manual": True,         # auto-open on first load (will be turned off after first close)
+    "sample_patient_url": DEFAULT_SAMPLE_PATIENT_URL,
+    "manual_video_url": DEFAULT_MANUAL_VIDEO_URL,
+    # Patient list UX improvements
+    "patients_cache": set(),     # local cache so dropdown updates immediately
+    "patient_selector_key": 0,   # force selectbox to re-render when we add a new patient
+}
+for k, v in _defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 # ================================
 # Helpers
@@ -135,15 +123,12 @@ def build_clickable_citations(sources: List[Dict], turn_idx: int):
         page_str = f" — page {page_int}" if page_int is not None else ""
         src_label = pretty_source_label(src) if src else ns_label
         anchor = f"src-{turn_idx}-{i}"
-        header = (f"<div id='{anchor}'>[{i}] {icon} **{ns_label}** — {src_label}{page_str}</div>")
+        header = f"<div id='{anchor}'>[{i}] {icon} **{ns_label}** — {src_label}{page_str}</div>"
         expander = (
             "<details><summary>Show context</summary>"
             "<div style='white-space:pre-wrap;font-size:smaller;background:#fafafa;"
             "border:1px solid #ddd;padding:6px;border-radius:6px;margin-top:4px;'>"
-            + chunk
-            + "</div></details>"
-            if chunk
-            else ""
+            + chunk + "</div></details>" if chunk else ""
         )
         lines.append(header + expander)
     citation_html = " " + " ".join(
@@ -153,6 +138,7 @@ def build_clickable_citations(sources: List[Dict], turn_idx: int):
     return citation_html, lines
 
 def list_patient_namespaces():
+    """Read namespaces from Pinecone index stats. May be eventually consistent."""
     try:
         index = pc.Index(index_name)
         stats = index.describe_index_stats()
@@ -161,53 +147,13 @@ def list_patient_namespaces():
     except Exception:
         return []
 
+# ================================
+# Dialogs (container-based, not auto-dismissable)
+# ================================
 
-# ================================
-# User Manual Dialog
-# ================================
-# Updated manual_dialog function with proper containment:
-@st.dialog("📖 User Manual", width="large")
 def manual_dialog():
-    # Custom CSS for the content box only
-    st.markdown("""
-    <style>
-    /* Target the container that holds all the content */
-    div[data-testid="stVerticalBlockBorderWrapper"] {
-        height: 50vh;
-        overflow-y: auto;
-        padding: 30px;
-        margin: 10px 0;
-        border: 3px solid #ddd;
-        border-radius: 15px;
-        background-color: #f8f9fa;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-    
-    div[data-testid="stVerticalBlockBorderWrapper"]::-webkit-scrollbar {
-        width: 12px;
-    }
-    
-    div[data-testid="stVerticalBlockBorderWrapper"]::-webkit-scrollbar-track {
-        background: #f1f1f1;
-        border-radius: 6px;
-    }
-    
-    div[data-testid="stVerticalBlockBorderWrapper"]::-webkit-scrollbar-thumb {
-        background: #888;
-        border-radius: 6px;
-    }
-    
-    div[data-testid="stVerticalBlockBorderWrapper"]::-webkit-scrollbar-thumb:hover {
-        background: #555;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    sample_url = st.session_state.get("sample_patient_url") or "#"
-    video_url = st.session_state.get("manual_video_url")
-
-    # Use Streamlit container to group all content
     with st.container(border=True):
+        st.markdown("### 📖 User Manual")
         st.markdown("### 💔 Problem 💡 Solution 🏆 Outcome")
 
         st.markdown(
@@ -274,7 +220,7 @@ def manual_dialog():
         st.markdown(
             f"""
         1. (Optional) Upload relevant **coursebooks** once — they remain stored permanently.  
-        2. Upload a **patient file** with structured notes — [Download Sample Patient File]({sample_url})  
+        2. Upload a **patient file** with structured notes — [Download Sample Patient File]({"github.com/paradoxbaba/medical-assistant/blob/main/data/patient_data/Patient_P0005.pdf"})  
         3. Select **search mode**: *Patient Only*, *Coursebook Only*, or *Both*  
         4. Ask your medical question in the **chat input**  
         5. Review the **answer + citations** and expand context if needed
@@ -289,24 +235,16 @@ def manual_dialog():
             "🎥 Here’s a demo by Oracle on their Clinical AI Agent — for inspiration and context."
         )
         st.video("https://www.youtube.com/watch?v=KA717mJyNHY&ab_channel=Oracle")
+        if st.button("Close ✅", key="close_manual"):
+            st.session_state.show_manual = False
+            st.session_state.manual_shown_once = True
+            st.rerun()
 
-        
-
-    # Close button outside the container
-    if st.button("Close ✅", key="close_manual"):
-        st.session_state.show_manual = False
-        st.rerun()
-
-
-# ================================
-# Processing Dialogs
-# ================================
-
-@st.dialog("Processing Patient File")
 def patient_dialog():
+    """Runs ingestion and shows a close button. We update caches on Close so the UI refreshes correctly."""
     save_path, patient_id, filename = st.session_state.patient_meta
-    progress = st.progress(0)
 
+    progress = st.progress(0)
     st.write("Step 1: Splitting into chunks…")
     progress.progress(30)
 
@@ -317,18 +255,24 @@ def patient_dialog():
     st.success(f"✅ Done! Patient file '{filename}' uploaded.")
     progress.progress(100)
 
-    if st.button("Close ✅"):
+    # Only close when user clicks; upon close, update cache + select new patient and rerun
+    if st.button("Close ✅", key="close_patient"):
+        # Add to local cache so dropdown immediately contains this patient
+        st.session_state.patients_cache.add(patient_id)
+        st.session_state.current_patient = patient_id
+
+        # Reset processing flags and force selectbox to re-render
         st.session_state.show_patient_dialog = False
         st.session_state.processing_patient = False
-        st.session_state.current_patient = patient_id
         st.session_state.patient_uploader_key += 1
+        st.session_state.patient_selector_key += 1  # forces new key => rebuild selectbox
+
         st.rerun()
 
-@st.dialog("Processing Coursebook")
 def coursebook_dialog():
     save_path, filename = st.session_state.course_meta
-    progress = st.progress(0)
 
+    progress = st.progress(0)
     st.write("Step 1: Checking ingestion records…")
 
     if filename in st.session_state.uploaded_courses:
@@ -338,16 +282,14 @@ def coursebook_dialog():
         progress.progress(20)
         st.write("Step 2: Splitting into chunks…")
         progress.progress(50)
-
         st.write("Step 3: Uploading to Pinecone…")
         process_coursebook_pdf(save_path, embedding, index_name)
         st.session_state.uploaded_courses.add(filename)
         progress.progress(90)
-
         st.success(f"✅ Done! Coursebook '{filename}' uploaded.")
         progress.progress(100)
 
-    if st.button("Close ✅"):
+    if st.button("Close ✅", key="close_course"):
         st.session_state.show_course_dialog = False
         st.session_state.processing_course = False
         st.session_state.course_uploader_key += 1
@@ -360,27 +302,27 @@ def coursebook_dialog():
 with st.sidebar:
     st.title("⚙️ Controls")
 
-    # Search mode as radio
-    search_mode = st.radio("Search Mode", ["Both", "Patient Only", "Coursebook Only"], horizontal=False)
+    search_mode = st.radio("Search Mode", ["Both", "Patient Only", "Coursebook Only"])
 
-    # Patient selector (from Pinecone only)
-    patients = ["None"] + sorted(list_patient_namespaces())
+    # Build patient options from Pinecone + local cache, so they appear immediately after upload
+    remote_patients = sorted(list_patient_namespaces())
+    all_patients = sorted(set(remote_patients) | set(st.session_state.patients_cache))
+    patients = ["None"] + all_patients
+
+    # Use a changing key to force re-render when we add a new patient to cache
     st.session_state.current_patient = st.selectbox(
         "Select Patient",
         options=patients,
-        index=patients.index(st.session_state.current_patient)
-        if st.session_state.current_patient in patients
-        else 0,
+        index=patients.index(st.session_state.current_patient) if st.session_state.current_patient in patients else 0,
         format_func=lambda x: ("🏥 " + x) if x != "None" else "None",
+        key=f"patient_select_{st.session_state.patient_selector_key}",
     )
 
-    # Clear history
     if st.session_state.current_patient != "None":
         if st.button("🗑️ Clear History"):
             st.session_state.chat_history[st.session_state.current_patient] = []
             st.success("History cleared")
 
-    # Upload PDFs
     st.subheader("📥 Upload PDFs")
 
     # Patient PDF (always overwrite)
@@ -420,19 +362,19 @@ with st.sidebar:
     if st.session_state.show_course_dialog:
         coursebook_dialog()
 
-    # Reopen manual button
+    # Reopen manual
     if st.button("📖 User Manual"):
         st.session_state.show_manual = True
         st.rerun()
 
-
 # ================================
-# Show User Manual on First Load
+# Show User Manual (only once per session, but allow manual reopen)
 # ================================
 
+# Auto-open only once on first load; after that, user can open via button
 if st.session_state.show_manual:
+    # If it's the very first auto-open, manual_shown_once will be False; after closing, it becomes True
     manual_dialog()
-
 
 # ================================
 # Main Chat Display
@@ -511,7 +453,7 @@ if user_msg and user_msg.strip():
     sources = result.get("sources", [])
     contexts = result.get("contexts", [])
 
-    # Try to attach matching chunk text to each source
+    # Attach matching chunk text to each source for inline context
     for src in sources:
         for ctx in contexts:
             if (
@@ -531,7 +473,6 @@ if user_msg and user_msg.strip():
         }
     )
     st.rerun()
-
 
 # ================================
 # Footer Disclaimer
