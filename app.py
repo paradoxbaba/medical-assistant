@@ -55,6 +55,21 @@ if "patient_uploader_key" not in st.session_state:
 if "course_uploader_key" not in st.session_state:
     st.session_state.course_uploader_key = 0
 
+# Dialog control flags
+if "show_patient_dialog" not in st.session_state:
+    st.session_state.show_patient_dialog = False
+if "processing_patient" not in st.session_state:
+    st.session_state.processing_patient = False
+if "patient_meta" not in st.session_state:
+    st.session_state.patient_meta = None
+
+if "show_course_dialog" not in st.session_state:
+    st.session_state.show_course_dialog = False
+if "processing_course" not in st.session_state:
+    st.session_state.processing_course = False
+if "course_meta" not in st.session_state:
+    st.session_state.course_meta = None
+
 # ================================
 # Helpers
 # ================================
@@ -122,6 +137,61 @@ def list_patient_namespaces():
         return []
 
 # ================================
+# Dialog Definitions
+# ================================
+
+@st.dialog("Processing Patient File")
+def patient_dialog():
+    save_path, patient_id, filename = st.session_state.patient_meta
+    progress = st.progress(0)
+
+    st.write("Step 1: Splitting into chunks…")
+    progress.progress(30)
+
+    st.write("Step 2: Uploading to Pinecone…")
+    process_patient_pdf(save_path, patient_id, embedding, pc, index_name)
+    progress.progress(90)
+
+    st.success(f"✅ Done! Patient file '{filename}' uploaded.")
+    progress.progress(100)
+
+    if st.button("Close ✅"):
+        st.session_state.show_patient_dialog = False
+        st.session_state.processing_patient = False
+        st.session_state.current_patient = patient_id
+        st.session_state.patient_uploader_key += 1
+        st.rerun()
+
+@st.dialog("Processing Coursebook")
+def coursebook_dialog():
+    save_path, filename = st.session_state.course_meta
+    progress = st.progress(0)
+
+    st.write("Step 1: Checking ingestion records…")
+
+    if filename in st.session_state.uploaded_courses:
+        progress.progress(100)
+        st.success(f"✅ Done! Coursebook '{filename}' already processed.")
+    else:
+        progress.progress(20)
+        st.write("Step 2: Splitting into chunks…")
+        progress.progress(50)
+
+        st.write("Step 3: Uploading to Pinecone…")
+        process_coursebook_pdf(save_path, embedding, index_name)
+        st.session_state.uploaded_courses.add(filename)
+        progress.progress(90)
+
+        st.success(f"✅ Done! Coursebook '{filename}' uploaded.")
+        progress.progress(100)
+
+    if st.button("Close ✅"):
+        st.session_state.show_course_dialog = False
+        st.session_state.processing_course = False
+        st.session_state.course_uploader_key += 1
+        st.rerun()
+
+# ================================
 # Sidebar
 # ================================
 
@@ -153,37 +223,38 @@ with st.sidebar:
     patient_pdf = st.file_uploader(
         "Upload Patient PDF", type="pdf", key=f"patient_pdf_{st.session_state.patient_uploader_key}"
     )
-    if patient_pdf is not None:
+    if patient_pdf is not None and not st.session_state.processing_patient:
         filename = patient_pdf.name
         patient_id = os.path.splitext(filename)[0]
         save_path = os.path.join(PATIENT_DIR, filename)
         with open(save_path, "wb") as f:
             f.write(patient_pdf.read())
-        with st.spinner("Processing patient PDF..."):
-            process_patient_pdf(save_path, patient_id, embedding, pc, index_name)
-        st.session_state.current_patient = patient_id
-        st.success(f"Uploaded patient file: {filename}")
-        st.session_state.patient_uploader_key += 1
+
+        st.session_state.patient_meta = (save_path, patient_id, filename)
+        st.session_state.show_patient_dialog = True
+        st.session_state.processing_patient = True
         st.rerun()
+
+    if st.session_state.show_patient_dialog:
+        patient_dialog()
 
     # Coursebook PDF (skip if already processed)
     course_pdf = st.file_uploader(
         "Upload Coursebook PDF", type="pdf", key=f"course_pdf_{st.session_state.course_uploader_key}"
     )
-    if course_pdf is not None:
+    if course_pdf is not None and not st.session_state.processing_course:
         filename = course_pdf.name
-        if filename in st.session_state.uploaded_courses:
-            st.sidebar.info(f"📖 Coursebook '{filename}' already processed.")
-        else:
-            save_path = os.path.join(COURSE_DIR, filename)
-            with open(save_path, "wb") as f:
-                f.write(course_pdf.read())
-            with st.spinner("Processing coursebook..."):
-                process_coursebook_pdf(save_path, embedding, index_name)
-            st.session_state.uploaded_courses.add(filename)
-            st.success(f"Uploaded coursebook: {filename}")
-        st.session_state.course_uploader_key += 1
+        save_path = os.path.join(COURSE_DIR, filename)
+        with open(save_path, "wb") as f:
+            f.write(course_pdf.read())
+
+        st.session_state.course_meta = (save_path, filename)
+        st.session_state.show_course_dialog = True
+        st.session_state.processing_course = True
         st.rerun()
+
+    if st.session_state.show_course_dialog:
+        coursebook_dialog()
 
 # ================================
 # Main Chat Display
@@ -213,9 +284,9 @@ for turn_idx, turn in enumerate(st.session_state.chat_history[current]):
     )
 
     if source_lines:
-        with st.expander("**Sources**")
-        for line in source_lines:
-            st.markdown(line, unsafe_allow_html=True)
+        with st.expander("**Sources**"):
+            for line in source_lines:
+                st.markdown(line, unsafe_allow_html=True)
 
 # ================================
 # Chat Input
