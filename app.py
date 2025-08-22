@@ -386,7 +386,7 @@ with st.sidebar:
 
     # Coursebook PDF (skip if already processed)
     
-
+    st.write("Upload Course Book PDFs - Max Size 20 MB")
     st.markdown(
         """
         <style>
