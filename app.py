@@ -400,8 +400,8 @@ with st.sidebar:
             text-align: center;
         }
         </style>
-        <div class="disabled-upload" title="Not authorized to upload PDFs. Ask Animesh for permission.">
-        📕 Not authorized to upload PDFs — ask Animesh for permission
+        <div class="disabled-upload" title="Not authorized to upload PDFs.">
+        📕 Not authorized to upload PDFs.
         </div>
         """,
         unsafe_allow_html=True,
